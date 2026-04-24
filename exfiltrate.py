@@ -137,8 +137,6 @@ def load_and_run():
 
     # Attach to read() syscall tracepoints
     try:
-        b.attach_tracepoint(tp="syscalls:sys_enter_read", fn_name="trace_read_enter")
-        b.attach_tracepoint(tp="syscalls:sys_exit_read", fn_name="trace_read_exit")
         print("[+] Attached to read() syscall tracepoints")
     except Exception as e:
         print(f"[!] Failed to attach tracepoints: {e}")

@@ -46,7 +46,7 @@ TRACEPOINT_PROBE(syscalls, sys_exit_read)
     s64 capture_size = bytes_read < MAX_DATA_SIZE ? bytes_read : MAX_DATA_SIZE;
     bpf_probe_read_user(e.data, capture_size, (void *)(long)*buf_ptr);
 
-    intercepted_data.perf_submit(ctx, &e, sizeof(e));
+    intercepted_data.perf_submit(args, &e, sizeof(e));
     read_buf_map.delete(&pid);
     return 0;
 }

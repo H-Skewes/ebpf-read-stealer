@@ -3,6 +3,7 @@
 
 #define MAX_DATA_SIZE 256
 
+// defines event data
 struct event_t {
     u32 pid;
     u32 uid;
@@ -11,9 +12,12 @@ struct event_t {
     char comm[16];
 };
 
+
 BPF_PERF_OUTPUT(intercepted_data);
 BPF_HASH(read_buf_map, u32, u64);
 
+
+// hooks to read
 TRACEPOINT_PROBE(syscalls, sys_enter_read)
 {
     u32 pid = bpf_get_current_pid_tgid() >> 32;
@@ -22,6 +26,8 @@ TRACEPOINT_PROBE(syscalls, sys_enter_read)
     return 0;
 }
 
+
+# copies data from read onto perf ring
 TRACEPOINT_PROBE(syscalls, sys_exit_read)
 {
     u32 pid = bpf_get_current_pid_tgid() >> 32;
